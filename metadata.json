@@ -1,0 +1,5 @@
+{
+  "name": "AI Lead Cleaner & Assigner",
+  "description": "An intelligent web application to automatically clean, enrich, and assign messy lead data from text inputs. It uses AI to parse details, normalize data, and distribute leads to salespeople based on configurable rules.",
+  "requestFramePermissions": []
+}
