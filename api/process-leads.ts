@@ -52,82 +52,91 @@ export default async function handler(req: Request): Promise<Response> {
         const model = "gemini-2.5-flash"; // Using flash for speed
 
         const leadTypeInstruction = source
-            ? `The Lead Type for this lead is '${source}'. Use this value for the 'leadType' field.`
-            : "Identify the Lead Type or source from the text content.";
+            ? `The Lead Type for all leads in this batch is '${source}'. Use this value for the 'leadType' field in every object.`
+            : "Identify the Lead Type or source from the text content for each lead.";
         
         const responseSchema = {
-            type: Type.OBJECT,
-            properties: {
-                fullName: { type: Type.STRING, description: "The full name of the lead, with correct capitalization." },
-                email: { type: Type.STRING, description: "The lead's email address, with typos corrected." },
-                phoneNumber: { type: Type.STRING, description: "The lead's phone number, normalized to E.164 format." },
-                city: { type: Type.STRING, description: "The city of the lead, transliterated to English if necessary." },
-                state: { type: Type.STRING, description: "The inferred state/province based on the city." },
-                country: { type: Type.STRING, description: "The inferred country based on the city and phone number." },
-                course: { type: Type.STRING, description: "The standardized course name from the provided official list." },
-                leadType: { type: Type.STRING, description: "The source of the lead, e.g., 'Facebook', 'LinkedIn'." },
-            },
-            required: ['fullName', 'email', 'phoneNumber', 'city', 'state', 'country', 'course', 'leadType']
+            type: Type.ARRAY,
+            items: {
+                type: Type.OBJECT,
+                properties: {
+                    fullName: { type: Type.STRING, description: "The full name of the lead, with correct capitalization." },
+                    email: { type: Type.STRING, description: "The lead's email address, with typos corrected." },
+                    phoneNumber: { type: Type.STRING, description: "The lead's phone number, normalized to E.164 format." },
+                    city: { type: Type.STRING, description: "The city of the lead, transliterated to English if necessary." },
+                    state: { type: Type.STRING, description: "The inferred state/province based on the city." },
+                    country: { type: Type.STRING, description: "The inferred country based on the city and phone number." },
+                    course: { type: Type.STRING, description: "The standardized course name from the provided official list." },
+                    leadType: { type: Type.STRING, description: "The source of the lead, e.g., 'Facebook', 'LinkedIn'." },
+                },
+                required: ['fullName', 'email', 'phoneNumber', 'city', 'state', 'country', 'course', 'leadType']
+            }
         };
+
+        const prompt = `
+            You are an expert data cleaning and extraction system. Your task is to parse a raw text block containing multiple leads (one per line) and extract each one into a structured JSON object according to the provided schema.
+
+            Follow these rules precisely for each line:
+            1.  **Extract Fields:** Identify and extract the Full Name, Email, Phone Number, City, and the raw course information.
+            2.  **Clean Phone Number:** Normalize the phone number to the E.164 format (e.g., +919902328018). Remove all spaces, dashes, parentheses, or other symbols. Ensure the country code is present.
+            3.  **Correct Email:** Fix any obvious typos in the email domain (e.g., 'gmail.con' -> 'gmail.com', 'hotmal.com' -> 'hotmail.com').
+            4.  **Normalize Name:** Capitalize the first letter of each part of the full name (e.g., 'shifan shafi' -> 'Shifan Shafi').
+            5.  **Geographic Enrichment:**
+                *   If the city is non-English, transliterate it to its common English spelling.
+                *   Based on the city and phone number country code, infer the State and Country. For example, if 'Chikmagalur' and a '+91' number are provided, you must infer State: 'Karnataka' and Country: 'India'. If a city is in the UAE and number is '+971', infer Country: 'United Arab Emirates' and the correct Emirate as the state. If unable to determine, use "Unknown".
+            6.  **Lead Type:** ${leadTypeInstruction}
+            7.  **Course Standardization:** This is a critical step. You MUST map the identified course to one of the following official course names. If the user mentions a course that is a variation or abbreviation, find the closest match from this list.
+                *   **Official Course List:** NEBOSH Course, NEBOSH Arabic, IOSH Course, Safety Diploma Courses, ISO Lead Auditor Course, Food Safety Course, NEBOSH - IGC, NEBOSH - HSW, NEBOSH - FSC, NEBOSH - NGC, NEBOSH - PSM, NEBOSH - IDIP, NEBOSH - Fire Safety, NEBOSH - HSE, NEBOSH - INCIDENT INVESTIGATION, NEBOSH -EAW, OTHM, SAFETY DIPLOMA, ADVANCED DIPLOMA, POST DIPLOMA, MASTER DIPLOMA, PG DIPLOMA, IOSH, OSHA, IEMA, ISO 45001:2018, ISO 14001:2015, ISO 9001:2015, HAZOP, HACCP, INDUSTRIAL DIPLOMA, CFPS, FOOD SAFETY COURSES, IMS INTERNAL AUDITOR, EMS, ROSPA COURSES, CPD COURSES, KHDA COURSES, CPD STANDARD OFFICE COURSES, OTHER COURSES, IIRSM COURSES, Other Safety Courses.
+                *   **Special Mapping Rules:**
+                    *   If the input is just "safety course" or similar generic safety training, map it to "Safety Diploma Courses".
+                    *   If the input mentions "NEBOSH" but does not specify which one (e.g., IGC, HSW), map it to "NEBOSH Course".
+                    *   If no course from the list is a clear match, use "OTHER COURSES".
+            8.  **Output:** Return a single, complete JSON array where each element is a JSON object representing one cleaned lead. DO NOT use any markdown formatting or explanatory text. Your entire output must be only the valid JSON array.
+
+            Here is the raw text block to process:
+            ${lines.join('\n')}
+        `;
+        
+        const response = await ai.models.generateContent({
+            model: model,
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: responseSchema,
+                temperature: 0.2, // Lower temperature for more deterministic output
+            }
+        });
+        
+        const cleanedLeadsText = response.text;
+        
+        if (!cleanedLeadsText || !cleanedLeadsText.trim().startsWith('[')) {
+            console.warn(`Model returned invalid JSON array: "${cleanedLeadsText}"`);
+             return new Response(JSON.stringify({ message: "The AI model returned an invalid response. Please check the input data and try again." }), {
+                status: 500,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
 
         const readableStream = new ReadableStream({
             async start(controller) {
                 const encoder = new TextEncoder();
-
-                // Process each line individually and stream the result
-                for (const line of lines) {
-                    if (!line.trim()) continue; // Skip empty lines
-
-                    const prompt = `
-                        You are an expert data cleaning and extraction system. Your task is to parse a raw text line containing lead information and extract it into a structured JSON object according to the provided schema.
-
-                        Follow these rules precisely:
-                        1.  **Extract Fields:** Identify and extract the Full Name, Email, Phone Number, City, and the raw course information.
-                        2.  **Clean Phone Number:** Normalize the phone number to the E.164 format (e.g., +919902328018). Remove all spaces, dashes, parentheses, or other symbols. Ensure the country code is present.
-                        3.  **Correct Email:** Fix any obvious typos in the email domain (e.g., 'gmail.con' -> 'gmail.com', 'hotmal.com' -> 'hotmail.com').
-                        4.  **Normalize Name:** Capitalize the first letter of each part of the full name (e.g., 'shifan shafi' -> 'Shifan Shafi').
-                        5.  **Geographic Enrichment:**
-                            *   If the city is non-English, transliterate it to its common English spelling.
-                            *   Based on the city and phone number country code, infer the State and Country. For example, if 'Chikmagalur' and a '+91' number are provided, you must infer State: 'Karnataka' and Country: 'India'. If a city is in the UAE and number is '+971', infer Country: 'United Arab Emirates' and the correct Emirate as the state. If unable to determine, use "Unknown".
-                        6.  **Lead Type:** ${leadTypeInstruction}
-                        7.  **Course Standardization:** This is a critical step. You MUST map the identified course to one of the following official course names. If the user mentions a course that is a variation or abbreviation, find the closest match from this list.
-                            *   **Official Course List:** NEBOSH Course, NEBOSH Arabic, IOSH Course, Safety Diploma Courses, ISO Lead Auditor Course, Food Safety Course, NEBOSH - IGC, NEBOSH - HSW, NEBOSH - FSC, NEBOSH - NGC, NEBOSH - PSM, NEBOSH - IDIP, NEBOSH - Fire Safety, NEBOSH - HSE, NEBOSH - INCIDENT INVESTIGATION, NEBOSH -EAW, OTHM, SAFETY DIPLOMA, ADVANCED DIPLOMA, POST DIPLOMA, MASTER DIPLOMA, PG DIPLOMA, IOSH, OSHA, IEMA, ISO 45001:2018, ISO 14001:2015, ISO 9001:2015, HAZOP, HACCP, INDUSTRIAL DIPLOMA, CFPS, FOOD SAFETY COURSES, IMS INTERNAL AUDITOR, EMS, ROSPA COURSES, CPD COURSES, KHDA COURSES, CPD STANDARD OFFICE COURSES, OTHER COURSES, IIRSM COURSES, Other Safety Courses.
-                            *   **Special Mapping Rules:**
-                                *   If the input is just "safety course" or similar generic safety training, map it to "Safety Diploma Courses".
-                                *   If the input mentions "NEBOSH" but does not specify which one (e.g., IGC, HSW), map it to "NEBOSH Course".
-                                *   If no course from the list is a clear match, use "OTHER COURSES".
-                        8.  **Output:** Return a single, complete JSON object. DO NOT use any markdown formatting or explanatory text. Your entire output must be only the valid JSON object.
-
-                        Here is the raw text line to process:
-                        ${line}
-                    `;
-                    
-                    try {
-                        const response = await ai.models.generateContent({
-                            model: model,
-                            contents: prompt,
-                            config: {
-                                responseMimeType: "application/json",
-                                responseSchema: responseSchema,
-                                temperature: 0.2, // Lower temperature for more deterministic output
-                            }
-                        });
-                        
-                        const text = response.text;
-                        if (text && text.trim().startsWith('{')) {
-                            controller.enqueue(encoder.encode(text.trim() + '\n'));
-                        } else {
-                            console.warn(`Could not process line: "${line}". Model returned invalid JSON: "${text}"`);
-                        }
-                    } catch (e) {
-                        console.error(`Error processing line in Gemini: "${line}"`, e);
+                try {
+                    const leads: CleanedLead[] = JSON.parse(cleanedLeadsText);
+                    for (const lead of leads) {
+                        // Stream each valid lead object back to the client
+                        controller.enqueue(encoder.encode(JSON.stringify(lead) + '\n'));
+                        // Add a tiny delay to allow the UI to update smoothly
+                        await new Promise(res => setTimeout(res, 50));
                     }
+                } catch(e) {
+                    console.error("Error parsing the JSON array from the model:", e);
+                    // If parsing fails, we can't stream, so we'll close with an error handled by the client
+                } finally {
+                    controller.close();
                 }
-                controller.close();
             },
         });
 
-        // Return the stream directly to the client.
         return new Response(readableStream, {
             headers: { 'Content-Type': 'text/plain; charset=utf-8' },
         });

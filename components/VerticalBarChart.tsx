@@ -36,7 +36,7 @@ export const VerticalBarChart: React.FC<VerticalBarChartProps> = ({ data, onBarC
                             }
                             style={{ height: `${maxValue > 0 ? (item.value / maxValue) * 100 : 0}%` }}
                         >
-                             <div className="absolute -top-5 text-xs font-bold text-gray-200 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                             <div className="absolute -top-5 text-xs font-bold text-gray-200">
                                 {item.value}
                             </div>
                         </div>

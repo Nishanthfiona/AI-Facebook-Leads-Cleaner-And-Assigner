@@ -12,23 +12,40 @@ import { ProgressIndicator } from './components/ProgressIndicator';
 import { RetryIcon } from './components/icons/RetryIcon';
 import { DatabaseIcon } from './components/icons/DatabaseIcon';
 import { Dashboard } from './components/Dashboard';
+import { TrashIcon } from './components/icons/TrashIcon';
 
 const App: React.FC = () => {
-    const [rawText, setRawText] = useState<string>('');
+    const [rawText, setRawText] = useState<string>(() => sessionStorage.getItem('rawText') || '');
     const [leadSourceFromFile, setLeadSourceFromFile] = useState<string | null>(null);
-    const [cleanedLeads, setCleanedLeads] = useState<CleanedLead[]>([]);
-    const [assignedLeads, setAssignedLeads] = useState<AssignedLead[]>([]);
+    const [cleanedLeads, setCleanedLeads] = useState<CleanedLead[]>(() => {
+        try {
+            const saved = sessionStorage.getItem('cleanedLeads');
+            return saved ? JSON.parse(saved) : [];
+        } catch (error) {
+            console.error('Error loading cleaned leads from session storage:', error);
+            return [];
+        }
+    });
+    const [assignedLeads, setAssignedLeads] = useState<AssignedLead[]>(() => {
+        try {
+            const saved = sessionStorage.getItem('assignedLeads');
+            return saved ? JSON.parse(saved) : [];
+        } catch (error) {
+            console.error('Error loading assigned leads from session storage:', error);
+            return [];
+        }
+    });
     const [salespeople, setSalespeople] = useState<Salesperson[]>(() => {
         try {
             const saved = localStorage.getItem('salespeopleConfig');
-            const initialValue = saved ? JSON.parse(saved) : null;
-            if (Array.isArray(initialValue)) {
-                return initialValue;
+            // If the item exists in localStorage, parse it. This correctly handles an empty array '[]'.
+            if (saved !== null) {
+                return JSON.parse(saved);
             }
         } catch (error) {
             console.error('Error loading salespeople from local storage:', error);
         }
-        // Default value if nothing is stored or if there's an error
+        // Only return the default list if nothing is found in localStorage (i.e., first-time visit).
         return [
             { id: Date.now(), name: 'Amit Sharma', email: 'amit.sharma@example.com', locations: ['Karnataka', 'Maharashtra'] },
             { id: Date.now() + 1, name: 'Priya Patel', email: 'priya.patel@example.com', locations: ['Delhi', 'Karnataka'] },
@@ -46,6 +63,7 @@ const App: React.FC = () => {
 
     const roundRobinCounters = useRef<Record<string, number>>({});
 
+    // Persist salespeople to localStorage
     useEffect(() => {
         try {
             localStorage.setItem('salespeopleConfig', JSON.stringify(salespeople));
@@ -54,10 +72,58 @@ const App: React.FC = () => {
         }
     }, [salespeople]);
 
+    // Persist leads and raw text to sessionStorage
+    useEffect(() => {
+        try {
+            sessionStorage.setItem('rawText', rawText);
+        } catch (error) {
+            console.error('Error saving raw text to session storage:', error);
+        }
+    }, [rawText]);
+
+    useEffect(() => {
+        try {
+            sessionStorage.setItem('cleanedLeads', JSON.stringify(cleanedLeads));
+        } catch (error) {
+            console.error('Error saving cleaned leads to session storage:', error);
+        }
+    }, [cleanedLeads]);
+
+    useEffect(() => {
+        try {
+            sessionStorage.setItem('assignedLeads', JSON.stringify(assignedLeads));
+        } catch (error) {
+            console.error('Error saving assigned leads to session storage:', error);
+        }
+    }, [assignedLeads]);
+
+
     const handleDataLoad = useCallback((text: string, source: string | null) => {
         setRawText(text);
         setLeadSourceFromFile(source);
     }, []);
+
+    const handleClearSession = useCallback(() => {
+        setRawText('');
+        setLeadSourceFromFile(null);
+        setCleanedLeads([]);
+        setAssignedLeads([]);
+        setError(null);
+        setAssignmentFailed(false);
+        setSelectedCountry(null);
+        setProgress({ visible: false, status: '', percentage: 0 });
+
+        try {
+            sessionStorage.removeItem('rawText');
+            sessionStorage.removeItem('cleanedLeads');
+            sessionStorage.removeItem('assignedLeads');
+        } catch (error) {
+            console.error('Error clearing session storage:', error);
+        }
+        setNotification({ message: 'Session cleared!', type: 'success' });
+        setTimeout(() => setNotification(null), 3000);
+    }, []);
+
 
     const handleProcessLeads = useCallback(async () => {
         if (!rawText.trim()) {
@@ -78,13 +144,11 @@ const App: React.FC = () => {
         try {
             const handleNewLead = (newLead: CleanedLead) => {
                 processedLeads.push(newLead);
-                // Update state to re-render the table with the new lead
                 setCleanedLeads([...processedLeads]);
                 
                 setProgress(prev => ({
                     visible: true,
                     status: `Processing lead ${processedLeads.length} of ${lines.length}...`,
-                    // Allocate 80% of progress bar to streaming, 20% to post-processing
                     percentage: 10 + (processedLeads.length / lines.length) * 70 
                 }));
             };
@@ -92,7 +156,7 @@ const App: React.FC = () => {
             await cleanAndExtractLeadData(lines, leadSourceFromFile, handleNewLead);
             
             setProgress({ visible: true, status: 'Deduplicating leads...', percentage: 80 });
-            await new Promise(res => setTimeout(res, 300)); // Simulate work for UX
+            await new Promise(res => setTimeout(res, 300));
             
             const uniqueLeads = Array.from(new Map(processedLeads.map(lead => [`${lead.email}-${lead.phoneNumber}`, lead])).values());
             setCleanedLeads(uniqueLeads);
@@ -104,7 +168,6 @@ const App: React.FC = () => {
             console.error("Error during lead processing:", e);
             let errorMessage = "An unknown error occurred while processing leads.";
             if (e instanceof Error) {
-                // The error message from the service is now self-sufficient and user-friendly.
                 errorMessage = e.message;
             }
             setError(errorMessage);
@@ -237,7 +300,6 @@ const App: React.FC = () => {
                 value, 
                 isClickable: countryHasStates.get(label) || false 
             }))
-            // FIX: Explicitly type sort callback arguments to resolve type inference error.
             .sort((a: ChartData, b: ChartData) => b.value - a.value);
     }, [cleanedLeads]);
 
@@ -252,7 +314,6 @@ const App: React.FC = () => {
             }, {});
         return Object.entries(counts)
             .map(([label, value]) => ({ label, value }))
-            // FIX: Explicitly type sort callback arguments to resolve type inference error.
             .sort((a: ChartData, b: ChartData) => b.value - a.value);
     }, [cleanedLeads, selectedCountry]);
 
@@ -306,7 +367,19 @@ const App: React.FC = () => {
                         )}
                         <div>
                             <div className="flex justify-between items-center mb-4 flex-wrap gap-y-4">
-                                <h2 className="text-2xl font-bold text-cyan-400">Cleaned & Enriched Leads</h2>
+                                <div className="flex items-center gap-4">
+                                    <h2 className="text-2xl font-bold text-cyan-400">Cleaned & Enriched Leads</h2>
+                                    {(cleanedLeads.length > 0 || assignedLeads.length > 0) && (
+                                        <button
+                                            onClick={handleClearSession}
+                                            title="Clear all input and results for a new session"
+                                            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-gray-700 text-red-400 font-semibold rounded-lg shadow-md hover:bg-gray-600 hover:text-red-300 transition-colors duration-300"
+                                        >
+                                            <TrashIcon />
+                                            Clear
+                                        </button>
+                                    )}
+                                </div>
                                 <div className="flex items-center gap-3">
                                     <button
                                         onClick={handleSaveToDatabase}
