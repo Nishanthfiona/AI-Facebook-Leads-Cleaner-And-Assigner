@@ -2,8 +2,7 @@
 // e.g., /api/process-leads.ts
 // Platforms like Vercel will automatically turn this into a serverless function.
 
-import { GoogleGenAI, Type } from "@google/genai";
-import type { CleanedLead } from '../types';
+import { GoogleGenAI } from "@google/genai";
 
 // This tells Vercel to use the Edge Runtime, which is required for streaming responses.
 export const config = {
@@ -55,26 +54,8 @@ export default async function handler(req: Request): Promise<Response> {
             ? `The Lead Type for all leads in this batch is '${source}'. Use this value for the 'leadType' field in every object.`
             : "Identify the Lead Type or source from the text content for each lead.";
         
-        const responseSchema = {
-            type: Type.ARRAY,
-            items: {
-                type: Type.OBJECT,
-                properties: {
-                    fullName: { type: Type.STRING, description: "The full name of the lead, with correct capitalization." },
-                    email: { type: Type.STRING, description: "The lead's email address, with typos corrected." },
-                    phoneNumber: { type: Type.STRING, description: "The lead's phone number, normalized to E.164 format." },
-                    city: { type: Type.STRING, description: "The city of the lead, transliterated to English if necessary." },
-                    state: { type: Type.STRING, description: "The inferred state/province based on the city." },
-                    country: { type: Type.STRING, description: "The inferred country based on the city and phone number." },
-                    course: { type: Type.STRING, description: "The standardized course name from the provided official list." },
-                    leadType: { type: Type.STRING, description: "The source of the lead, e.g., 'Facebook', 'LinkedIn'." },
-                },
-                required: ['fullName', 'email', 'phoneNumber', 'city', 'state', 'country', 'course', 'leadType']
-            }
-        };
-
         const prompt = `
-            You are an expert data cleaning and extraction system. Your task is to parse a raw text block containing multiple leads (one per line) and extract each one into a structured JSON object according to the provided schema.
+            You are an expert data cleaning and extraction system. Your task is to parse a raw text block containing multiple leads (one per line) and extract each one into a structured JSON object.
 
             Follow these rules precisely for each line:
             1.  **Extract Fields:** Identify and extract the Full Name, Email, Phone Number, City, and the raw course information.
@@ -91,54 +72,39 @@ export default async function handler(req: Request): Promise<Response> {
                     *   If the input is just "safety course" or similar generic safety training, map it to "Safety Diploma Courses".
                     *   If the input mentions "NEBOSH" but does not specify which one (e.g., IGC, HSW), map it to "NEBOSH Course".
                     *   If no course from the list is a clear match, use "OTHER COURSES".
-            8.  **Output:** Return a single, complete JSON array where each element is a JSON object representing one cleaned lead. DO NOT use any markdown formatting or explanatory text. Your entire output must be only the valid JSON array.
+            8.  **Output Format:** You MUST stream your response as newline-delimited JSON (JSONL). For each lead you process from the raw text, output one single, complete JSON object on its own line. Do not wrap the entire output in a JSON array. Do not use any markdown formatting or explanatory text.
 
             Here is the raw text block to process:
             ${lines.join('\n')}
         `;
         
-        const response = await ai.models.generateContent({
+        const stream = await ai.models.generateContentStream({
             model: model,
             contents: prompt,
             config: {
-                responseMimeType: "application/json",
-                responseSchema: responseSchema,
                 temperature: 0.2, // Lower temperature for more deterministic output
             }
         });
-        
-        const cleanedLeadsText = response.text;
-        
-        if (!cleanedLeadsText || !cleanedLeadsText.trim().startsWith('[')) {
-            console.warn(`Model returned invalid JSON array: "${cleanedLeadsText}"`);
-             return new Response(JSON.stringify({ message: "The AI model returned an invalid response. Please check the input data and try again." }), {
-                status: 500,
-                headers: { 'Content-Type': 'application/json' },
-            });
-        }
 
+        // Pipe the stream from the AI directly to the client response.
         const readableStream = new ReadableStream({
             async start(controller) {
                 const encoder = new TextEncoder();
-                try {
-                    const leads: CleanedLead[] = JSON.parse(cleanedLeadsText);
-                    for (const lead of leads) {
-                        // Stream each valid lead object back to the client
-                        controller.enqueue(encoder.encode(JSON.stringify(lead) + '\n'));
-                        // Add a tiny delay to allow the UI to update smoothly
-                        await new Promise(res => setTimeout(res, 50));
+                for await (const chunk of stream) {
+                    const text = chunk.text;
+                    if (text) {
+                        controller.enqueue(encoder.encode(text));
                     }
-                } catch(e) {
-                    console.error("Error parsing the JSON array from the model:", e);
-                    // If parsing fails, we can't stream, so we'll close with an error handled by the client
-                } finally {
-                    controller.close();
                 }
-            },
+                controller.close();
+            }
         });
 
         return new Response(readableStream, {
-            headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+            headers: { 
+                'Content-Type': 'text/plain; charset=utf-8',
+                'X-Content-Type-Options': 'nosniff', // Prevents browser from misinterpreting content
+            },
         });
 
     } catch (error) {
