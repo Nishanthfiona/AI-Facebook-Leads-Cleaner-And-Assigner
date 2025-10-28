@@ -1,7 +1,11 @@
 
 import type { CleanedLead } from '../types';
 
-export const cleanAndExtractLeadData = async (lines: string[], source: string | null): Promise<CleanedLead[]> => {
+export const cleanAndExtractLeadData = async (
+    lines: string[], 
+    source: string | null,
+    onLeadReceived: (lead: CleanedLead) => void
+): Promise<void> => {
     try {
         const response = await fetch('/api/process-leads', {
             method: 'POST',
@@ -12,27 +16,63 @@ export const cleanAndExtractLeadData = async (lines: string[], source: string | 
         });
 
         if (!response.ok) {
-            let errorMessage;
+            const errorText = await response.text();
+            let errorMessage = `The server responded with status ${response.status}.`;
             try {
-                // Try to get a specific message from the server's JSON response
-                const errorData = await response.json();
-                errorMessage = errorData.message || `The server responded with status ${response.status}.`;
+                // Try to parse a structured error message from the server
+                const errorData = JSON.parse(errorText);
+                errorMessage = errorData.message || errorMessage;
             } catch (jsonError) {
-                // This block executes if the server response is not valid JSON
-                console.error("Could not parse error response as JSON.", jsonError);
-                if (response.status === 500) {
-                    // Provide a specific, helpful message for the most common deployment issue.
+                // If the error response isn't JSON, use the raw text
+                if (response.status === 504) {
+                    errorMessage = "The server timed out (504). This can happen with very large inputs. If you continue to see this error, please try processing a smaller batch of leads.";
+                } else if (response.status === 500 && errorText.includes('API_KEY')) {
                     errorMessage = "A server error occurred (500). This can happen on platforms like Vercel if the `API_KEY` environment variable is missing or incorrect. Please check your project's server logs and environment variable settings.";
-                } else {
-                    errorMessage = `An unexpected server error occurred (Status: ${response.status}). The server response was not readable. Check the server logs for more details.`;
+                } else if (errorText) {
+                    errorMessage = errorText; // Use the raw error text if available
                 }
             }
             throw new Error(errorMessage);
         }
 
-        const result = await response.json();
-        return result.leads;
+        if (!response.body) {
+            throw new Error("Streaming response not supported or response body is missing.");
+        }
 
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+                // Process any remaining text in the buffer when the stream is done
+                if (buffer.trim()) {
+                    try {
+                        onLeadReceived(JSON.parse(buffer));
+                    } catch (e) {
+                        console.warn("Could not parse final chunk of stream:", buffer, e);
+                    }
+                }
+                break;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const parts = buffer.split('\n');
+            
+            // The last part might be an incomplete line, so we keep it in the buffer
+            buffer = parts.pop() || '';
+
+            for (const part of parts) {
+                if (part.trim()) {
+                    try {
+                        onLeadReceived(JSON.parse(part));
+                    } catch (e) {
+                        console.warn("Could not parse line from stream:", part, e);
+                    }
+                }
+            }
+        }
     } catch (error) {
         console.error("Error calling backend service:", error);
         if (error instanceof Error) {

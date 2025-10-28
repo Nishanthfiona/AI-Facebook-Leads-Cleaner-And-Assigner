@@ -70,17 +70,31 @@ const App: React.FC = () => {
         setAssignedLeads([]);
         setAssignmentFailed(false);
         setSelectedCountry(null); // Reset chart view on new process
-        setProgress({ visible: true, status: 'Initializing...', percentage: 10 });
+        setProgress({ visible: true, status: 'Initializing AI stream...', percentage: 10 });
+
+        const lines = rawText.trim().split('\n').filter(line => line.trim() !== '');
+        const processedLeads: CleanedLead[] = [];
 
         try {
-            const lines = rawText.trim().split('\n').filter(line => line.trim() !== '');
-            setProgress({ visible: true, status: 'Cleaning & extracting with AI...', percentage: 40 });
-            const result = await cleanAndExtractLeadData(lines, leadSourceFromFile);
+            const handleNewLead = (newLead: CleanedLead) => {
+                processedLeads.push(newLead);
+                // Update state to re-render the table with the new lead
+                setCleanedLeads([...processedLeads]);
+                
+                setProgress(prev => ({
+                    visible: true,
+                    status: `Processing lead ${processedLeads.length} of ${lines.length}...`,
+                    // Allocate 80% of progress bar to streaming, 20% to post-processing
+                    percentage: 10 + (processedLeads.length / lines.length) * 70 
+                }));
+            };
+
+            await cleanAndExtractLeadData(lines, leadSourceFromFile, handleNewLead);
             
             setProgress({ visible: true, status: 'Deduplicating leads...', percentage: 80 });
             await new Promise(res => setTimeout(res, 300)); // Simulate work for UX
             
-            const uniqueLeads = Array.from(new Map(result.map(lead => [`${lead.email}-${lead.phoneNumber}`, lead])).values());
+            const uniqueLeads = Array.from(new Map(processedLeads.map(lead => [`${lead.email}-${lead.phoneNumber}`, lead])).values());
             setCleanedLeads(uniqueLeads);
             
             setProgress({ visible: true, status: 'Processing complete!', percentage: 100 });
@@ -91,7 +105,6 @@ const App: React.FC = () => {
             let errorMessage = "An unknown error occurred while processing leads.";
             if (e instanceof Error) {
                 // The error message from the service is now self-sufficient and user-friendly.
-                // We no longer need to wrap it with generic text.
                 errorMessage = e.message;
             }
             setError(errorMessage);

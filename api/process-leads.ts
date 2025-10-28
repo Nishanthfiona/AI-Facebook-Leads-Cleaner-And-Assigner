@@ -3,8 +3,13 @@
 // e.g., /api/process-leads.ts
 // Platforms like Vercel will automatically turn this into a serverless function.
 
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI } from "@google/genai";
 import type { CleanedLead } from '../types';
+
+// This tells Vercel to use the Edge Runtime, which is required for streaming responses.
+export const config = {
+    runtime: 'edge',
+};
 
 // This function will be the handler for your serverless function.
 // It is designed to work with platforms that support a Request/Response model.
@@ -47,21 +52,6 @@ export default async function handler(req: Request): Promise<Response> {
         
         const ai = new GoogleGenAI({ apiKey: API_KEY });
 
-        const leadSchema = {
-            type: Type.OBJECT,
-            properties: {
-                fullName: { type: Type.STRING, description: 'Full name of the lead.' },
-                email: { type: Type.STRING, description: 'Email address of the lead.' },
-                phoneNumber: { type: Type.STRING, description: 'Contact phone number of the lead.' },
-                city: { type: Type.STRING, description: 'City of the lead.' },
-                state: { type: Type.STRING, description: 'State of the lead.' },
-                country: { type: Type.STRING, description: 'Country of the lead.' },
-                course: { type: Type.STRING, description: 'Course the lead is interested in, standardized from the official list.' },
-                leadType: { type: Type.STRING, description: 'The type or source of the lead.' },
-            },
-            required: ['fullName', 'email', 'phoneNumber', 'city', 'state', 'country', 'course', 'leadType']
-        };
-
         const leadTypeInstruction = source
             ? `The Lead Type for ALL leads in this batch is '${source}'. Use this value for the 'leadType' field in every object.`
             : "Identify the Lead Type or source from the text content of each line.";
@@ -84,39 +74,42 @@ export default async function handler(req: Request): Promise<Response> {
                     *   If the input is just "safety course" or similar generic safety training, map it to "Safety Diploma Courses".
                     *   If the input mentions "NEBOSH" but does not specify which one (e.g., IGC, HSW), map it to "NEBOSH Course".
                     *   If no course from the list is a clear match, use "OTHER COURSES".
-            8.  **Output:** Return ONLY a valid JSON array where each element is an object matching the provided schema. Do not add any extra text, explanations, or markdown formatting.
+            8.  **Output:** Stream back each lead as a separate, complete JSON object on its own line. DO NOT wrap the output in a JSON array or use any markdown formatting. Each line of your output MUST be a valid JSON object and nothing else.
 
             Here are the raw text lines:
             ${lines.join('\n')}
             `;
 
-        const response = await ai.models.generateContent({
+        const stream = await ai.models.generateContentStream({
             model: "gemini-2.5-flash",
             contents: prompt,
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: {
-                    type: Type.ARRAY,
-                    items: leadSchema,
-                },
+        });
+
+        const readableStream = new ReadableStream({
+            async start(controller) {
+                const encoder = new TextEncoder();
+                for await (const chunk of stream) {
+                    const text = chunk.text;
+                    if (text) {
+                        // Send each text chunk from the AI directly to the client.
+                        // Since we've asked for newline-delimited JSON, this will stream
+                        // the objects as they are generated.
+                        controller.enqueue(encoder.encode(text));
+                    }
+                }
+                controller.close();
             },
         });
 
-        const jsonString = response.text.trim();
-        const parsedData = JSON.parse(jsonString);
-
-        if (!Array.isArray(parsedData)) {
-            throw new Error("AI response was not a valid array.");
-        }
-
-        return new Response(JSON.stringify({ leads: parsedData as CleanedLead[] }), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
+        // Return the stream directly to the client.
+        return new Response(readableStream, {
+            headers: { 'Content-Type': 'text/plain; charset=utf-8' },
         });
 
     } catch (error) {
         console.error("Error in serverless function:", error);
         const detail = error instanceof Error ? error.message : 'An unknown error occurred.';
+        // Return a JSON error object, which the client-side service is equipped to parse.
         return new Response(JSON.stringify({ message: `The AI service failed to process the request. Details: ${detail}` }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
