@@ -2,7 +2,7 @@
 import type { CleanedLead } from '../types';
 
 export const cleanAndExtractLeadData = async (
-    lines: string[], 
+    batchLines: string[], 
     source: string | null,
     onLeadReceived: (lead: CleanedLead) => void
 ): Promise<void> => {
@@ -12,7 +12,7 @@ export const cleanAndExtractLeadData = async (
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ lines, source }),
+            body: JSON.stringify({ lines: batchLines, source }),
         });
 
         if (!response.ok) {

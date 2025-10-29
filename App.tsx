@@ -135,30 +135,43 @@ const App: React.FC = () => {
         setCleanedLeads([]);
         setAssignedLeads([]);
         setAssignmentFailed(false);
-        setSelectedCountry(null); // Reset chart view on new process
-        setProgress({ visible: true, status: 'Initializing AI stream...', percentage: 10 });
+        setSelectedCountry(null);
+        setProgress({ visible: true, status: 'Initializing...', percentage: 0 });
 
         const lines = rawText.trim().split('\n').filter(line => line.trim() !== '');
-        const processedLeads: CleanedLead[] = [];
+        let allProcessedLeads: CleanedLead[] = [];
+        const BATCH_SIZE = 50;
 
         try {
-            const handleNewLead = (newLead: CleanedLead) => {
-                processedLeads.push(newLead);
-                setCleanedLeads([...processedLeads]);
-                
-                setProgress(prev => ({
-                    visible: true,
-                    status: `Processing lead ${processedLeads.length} of ${lines.length}...`,
-                    percentage: 10 + (processedLeads.length / lines.length) * 70 
-                }));
-            };
+            for (let i = 0; i < lines.length; i += BATCH_SIZE) {
+                const batchLines = lines.slice(i, i + BATCH_SIZE);
+                const startNum = i + 1;
+                const endNum = Math.min(i + BATCH_SIZE, lines.length);
 
-            await cleanAndExtractLeadData(lines, leadSourceFromFile, handleNewLead);
+                setProgress({
+                    visible: true,
+                    status: `Sending batch: leads ${startNum}-${endNum} of ${lines.length}...`,
+                    percentage: (i / lines.length) * 80
+                });
+
+                const handleNewLead = (newLead: CleanedLead) => {
+                    allProcessedLeads.push(newLead);
+                    setCleanedLeads([...allProcessedLeads]);
+                    
+                    setProgress(prev => ({
+                        visible: true,
+                        status: `Processing lead ${allProcessedLeads.length} of ${lines.length}...`,
+                        percentage: (allProcessedLeads.length / lines.length) * 80 
+                    }));
+                };
+
+                await cleanAndExtractLeadData(batchLines, leadSourceFromFile, handleNewLead);
+            }
             
-            setProgress({ visible: true, status: 'Deduplicating leads...', percentage: 80 });
+            setProgress({ visible: true, status: 'Deduplicating leads...', percentage: 90 });
             await new Promise(res => setTimeout(res, 300));
             
-            const uniqueLeads = Array.from(new Map(processedLeads.map(lead => [`${lead.email}-${lead.phoneNumber}`, lead])).values());
+            const uniqueLeads = Array.from(new Map(allProcessedLeads.map(lead => [`${lead.email}-${lead.phoneNumber}`, lead])).values());
             setCleanedLeads(uniqueLeads);
             
             setProgress({ visible: true, status: 'Processing complete!', percentage: 100 });
