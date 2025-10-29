@@ -34,8 +34,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ totalLeads, chartData, cha
     }, [isFullscreen]);
     
     const chartContainerClasses = isFullscreen
-        ? "fixed inset-0 z-50 bg-gray-900/90 backdrop-blur-md flex flex-col p-4 sm:p-8"
-        : "md:col-span-4 bg-gray-900/50 p-6 rounded-lg border border-gray-700";
+        ? "fixed inset-0 z-50 bg-white flex flex-col p-4 sm:p-8"
+        : "md:col-span-4 bg-white p-6 rounded-lg border border-gray-200 shadow-md";
 
     return (
         <div className="bg-gray-800/50 p-6 rounded-xl shadow-lg border border-gray-700 space-y-6">
@@ -52,12 +52,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ totalLeads, chartData, cha
                 </div>
                 <div className={chartContainerClasses}>
                     <div className="flex justify-between items-center mb-4 flex-shrink-0">
-                         <h3 className="text-lg font-bold text-gray-200">{chartTitle}</h3>
+                         <h3 className="text-lg font-bold text-gray-800">{chartTitle}</h3>
                          <div className="flex items-center gap-4">
                             {chartView === 'state' && (
                                 <button 
                                     onClick={onBackToCountries}
-                                    className="flex items-center gap-1.5 text-sm text-cyan-400 hover:text-cyan-300 transition-colors"
+                                    className="flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-800 transition-colors"
                                 >
                                     <BackIcon />
                                     Back to Countries
@@ -65,7 +65,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ totalLeads, chartData, cha
                             )}
                              <button
                                 onClick={() => setIsFullscreen(!isFullscreen)}
-                                className="text-gray-400 hover:text-white transition-colors"
+                                className="text-gray-500 hover:text-gray-800 transition-colors"
                                 title={isFullscreen ? "Exit Fullscreen (Esc)" : "Enter Fullscreen"}
                              >
                                 {isFullscreen ? <ExitFullscreenIcon /> : <FullscreenIcon />}
